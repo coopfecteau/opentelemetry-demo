@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -35,7 +36,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	otelhooks "github.com/open-feature/go-sdk-contrib/hooks/open-telemetry/pkg"
-	flagd "github.com/open-feature/go-sdk-contrib/providers/flagd/pkg"
 	"github.com/open-feature/go-sdk/openfeature"
 	pb "github.com/opentelemetry/opentelemetry-demo/src/product-catalog/genproto/oteldemo"
 	"google.golang.org/grpc"
@@ -149,14 +149,16 @@ func main() {
 	}()
 
 	openfeature.AddHooks(otelhooks.NewTracesHook())
-	provider, err := flagd.NewProvider()
+	provider, providerName, err := newFlagProvider(logger)
 	if err != nil {
-		logger.Error("Error creating flagd provider", slog.Any("error", err))
+		logger.Error("Error creating flag provider", slog.String("provider", providerName), slog.Any("error", err))
 	}
 
 	err = openfeature.SetProvider(provider)
 	if err != nil {
-		logger.Error("Failed to set flagd as the provider", slog.Any("error", err))
+		logger.Error("Failed to set the flag provider", slog.String("provider", providerName), slog.Any("error", err))
+	} else {
+		logger.Info("Feature flags are served by " + providerName)
 	}
 	defer openfeature.Shutdown()
 
@@ -385,8 +387,21 @@ func (p *productCatalog) ListProducts(ctx context.Context, req *pb.Empty) (*pb.L
 	return &pb.ListProductsResponse{Products: products}, nil
 }
 
-func (p *productCatalog) GetProduct(ctx context.Context, req *pb.GetProductRequest) (*pb.Product, error) {
+func (p *productCatalog) GetProduct(ctx context.Context, req *pb.GetProductRequest) (product *pb.Product, err error) {
 	span := trace.SpanFromContext(ctx)
+	// A panic here would otherwise kill the gRPC worker and lose the reason. Recording it on
+	// the span with its stack is what lets a failed scan be traced back to the line of code.
+	defer func() {
+		if r := recover(); r != nil {
+			panicErr := fmt.Errorf("%v", r)
+			span.RecordError(panicErr, trace.WithStackTrace(true))
+			span.SetStatus(otelcodes.Error, "panic in GetProduct: "+panicErr.Error())
+			logger.ErrorContext(ctx, "panic in GetProduct "+req.Id+": "+panicErr.Error(),
+				slog.String("demo.product.id", req.Id),
+				slog.String("exception.stacktrace", string(debug.Stack())))
+			product, err = nil, status.Errorf(codes.Internal, "product catalog failed on %s: %v", req.Id, r)
+		}
+	}()
 	span.SetAttributes(
 		attribute.String("demo.product.id", req.Id),
 	)
@@ -408,10 +423,22 @@ func (p *productCatalog) GetProduct(ctx context.Context, req *pb.GetProductReque
 		return nil, status.Error(codes.NotFound, msg)
 	}
 
+	// Cross-sell: a product sits on its primary shelf, and we recommend the second category
+	// beside it at the counter. Categories are ordered primary-first by the catalog loader,
+	// so the related shelf is the one after it.
+	//
+	// Behind crossSellRecommendation, so the feature reaches stores by flag rather than by
+	// rollout - and leaves the same way.
+	relatedCategory := ""
+	if p.crossSellEnabled(ctx, req.Id) {
+		relatedCategory = found.Categories[1]
+	}
+
 	span.AddEvent("Product Found")
 	span.SetAttributes(
 		attribute.String("demo.product.id", req.Id),
 		attribute.String("demo.product.name", found.Name),
+		attribute.String("demo.product.related_category", relatedCategory),
 	)
 
 	logger.LogAttrs(
@@ -441,4 +468,22 @@ func (p *productCatalog) SearchProducts(ctx context.Context, req *pb.SearchProdu
 
 func (p *productCatalog) checkProductFailure(ctx context.Context, id string) bool {
 	return flags.ProductCatalogFailure.Value(ctx, openfeature.NewTargetlessEvaluationContext(map[string]any{"product_id": id}))
+}
+
+// crossSellEnabled reports whether this request should get a cross-sell recommendation.
+//
+// The product id and the store go into the evaluation context so the flag can be targeted -
+// a percentage of stores, one region, a single till - rather than only on or off. That is what
+// makes a rollout progressive instead of a switch.
+func (p *productCatalog) crossSellEnabled(ctx context.Context, id string) bool {
+	evalCtx := openfeature.NewTargetlessEvaluationContext(map[string]any{
+		"product_id": id,
+		"store_id":   os.Getenv("STORE_ID"),
+	})
+	enabled, err := crossSellClient.BooleanValue(ctx, "crossSellRecommendation", false, evalCtx)
+	if err != nil {
+		// A provider that cannot answer means the feature is off, not that the scan fails.
+		return false
+	}
+	return enabled
 }

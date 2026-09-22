@@ -28,6 +28,15 @@
         "on": true
       }
     },
+    "agentGrounding": {
+      "description": "Give the shopping assistant its catalog tools. Turn off to make it answer from memory and invent products.",
+      "state": "ENABLED",
+      "variants": {
+        "on": true,
+        "off": false
+      },
+      "defaultVariant": "on"
+    },
     "cartFailure": {
       "defaultVariant": "off",
       "description": "Fail cart service n% of the time",
@@ -40,6 +49,15 @@
         "75%": 0.75,
         "90%": 0.9,
         "off": 0
+      }
+    },
+    "crossSellRecommendation": {
+      "defaultVariant": "off",
+      "description": "Recommend a related shelf beside the scanned product at the register",
+      "state": "ENABLED",
+      "variants": {
+        "off": false,
+        "on": true
       }
     },
     "emailMemoryLeak": {
@@ -102,6 +120,15 @@
         "on": 100
       }
     },
+    "loadGeneratorTraffic": {
+      "description": "Enable synthetic traffic from the load generator. The k6 image (3.0.0) polls this flag from every scenario iteration and sleeps while it is off or missing.",
+      "state": "ENABLED",
+      "variants": {
+        "off": 0,
+        "on": 1
+      },
+      "defaultVariant": "on"
+    },
     "paymentFailure": {
       "defaultVariant": "off",
       "description": "Fail payment service charge requests n%",
@@ -156,24 +183,6 @@
         "off": false,
         "on": true
       }
-    },
-    "agentGrounding": {
-      "description": "Give the shopping assistant its catalog tools. Turn off to make it answer from memory and invent products.",
-      "state": "ENABLED",
-      "variants": {
-        "on": true,
-        "off": false
-      },
-      "defaultVariant": "on"
-    },
-    "loadGeneratorTraffic": {
-      "description": "Enable synthetic traffic from the load generator. The k6 image (3.0.0) polls this flag from every scenario iteration and sleeps while it is off or missing.",
-      "state": "ENABLED",
-      "variants": {
-        "off": 0,
-        "on": 1
-      },
-      "defaultVariant": "on"
     }
   }
 }
